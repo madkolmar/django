@@ -970,7 +970,11 @@ class ForeignKey(RelatedField, Field):
         Field.__init__(self, **kwargs)
 
     def get_manager(self):
-        return self.manager_class() if self.manager_class is not None else self.rel.to._default_manager
+        if self.manager_class is not None:
+            manager = self.manager_class()
+            manager.model = self.rel.to
+            return manager
+        return self.rel.to._default_manager
 
     def validate(self, value, model_instance):
         if self.rel.parent_link:
