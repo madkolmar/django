@@ -969,6 +969,9 @@ class ForeignKey(RelatedField, Field):
         self.reverse_manager_class = kwargs.pop('reverse_manager_class', None)
         Field.__init__(self, **kwargs)
 
+    def get_manager(self):
+        return self.manager_class() if self.manager_class is not None else self.rel.to._default_manager
+
     def validate(self, value, model_instance):
         if self.rel.parent_link:
             return
@@ -977,7 +980,7 @@ class ForeignKey(RelatedField, Field):
             return
 
         using = router.db_for_read(model_instance.__class__, instance=model_instance)
-        qs = self.rel.to._default_manager.using(using).filter(
+        qs = self.get_manager().using(using).filter(
                 **{self.rel.field_name: value}
              )
         qs = qs.complex_filter(self.rel.limit_choices_to)
@@ -1046,7 +1049,7 @@ class ForeignKey(RelatedField, Field):
                              (self.name, self.rel.to))
         defaults = {
             'form_class': forms.ModelChoiceField,
-            'queryset': self.rel.to._default_manager.using(db).complex_filter(self.rel.limit_choices_to),
+            'queryset': self.get_manager().using(db).complex_filter(self.rel.limit_choices_to),
             'to_field_name': self.rel.field_name,
         }
         defaults.update(kwargs)
