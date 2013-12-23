@@ -252,18 +252,25 @@ class ReverseSingleRelatedObjectDescriptor(six.with_metaclass(RenameRelatedObjec
     # a single "remote" value, on the class that defines the related field.
     # In the example "choice.poll", the poll attribute is a
     # ReverseSingleRelatedObjectDescriptor instance.
-    def __init__(self, field_with_rel):
+    def __init__(self, field_with_rel, manager_class=None):
         self.field = field_with_rel
         self.cache_name = self.field.get_cache_name()
+        if manager_class is None:
+            self.manager = None
+        else:
+            self.manager = manager_class()
+            self.manager.model = self.field.rel.to
 
     def is_cached(self, instance):
         return hasattr(instance, self.cache_name)
 
     def get_queryset(self, **db_hints):
         db = router.db_for_read(self.field.rel.to, **db_hints)
-        rel_mgr = self.field.rel.to._default_manager
+        if self.manager is not None:
+            return self.manager.using(db)
         # If the related manager indicates that it should be used for
         # related fields, respect that.
+        rel_mgr = self.field.rel.to._default_manager
         if getattr(rel_mgr, 'use_for_related_fields', False):
             return rel_mgr.using(db)
         else:
@@ -384,8 +391,9 @@ class ForeignRelatedObjectsDescriptor(object):
     # multiple "remote" values and have a ForeignKey pointed at them by
     # some other model. In the example "poll.choice_set", the choice_set
     # attribute is a ForeignRelatedObjectsDescriptor instance.
-    def __init__(self, related):
+    def __init__(self, related, manager_class=None):
         self.related = related   # RelatedObject instance
+        self.manager_class = manager_class
 
     def __get__(self, instance, instance_type=None):
         if instance is None:
@@ -405,7 +413,7 @@ class ForeignRelatedObjectsDescriptor(object):
     def related_manager_cls(self):
         # Dynamically create a class that subclasses the related model's default
         # manager.
-        superclass = self.related.model._default_manager.__class__
+        superclass = self.manager_class or self.related.model._default_manager.__class__
         rel_field = self.related.field
         rel_model = self.related.model
 
@@ -955,9 +963,19 @@ class ForeignObject(RelatedField):
                 parent_link=kwargs.pop('parent_link', False),
                 on_delete=kwargs.pop('on_delete', CASCADE),
             )
+        self.manager_class = kwargs.pop('manager_class', None)
+        self.reverse_manager_class = kwargs.pop('reverse_manager_class', None)
         kwargs['verbose_name'] = kwargs.get('verbose_name', None)
 
         super(ForeignObject, self).__init__(**kwargs)
+
+    @cached_property
+    def manager(self):
+        if self.manager_class is not None:
+            manager = self.manager_class()
+            manager.model = self.rel.to
+            return manager
+        return self.rel.to._default_manager
 
     def resolve_related_fields(self):
         if len(self.from_fields) < 1 or len(self.from_fields) != len(self.to_fields):
@@ -1130,13 +1148,13 @@ class ForeignObject(RelatedField):
 
     def contribute_to_class(self, cls, name, virtual_only=False):
         super(ForeignObject, self).contribute_to_class(cls, name, virtual_only=virtual_only)
-        setattr(cls, self.name, ReverseSingleRelatedObjectDescriptor(self))
+        setattr(cls, self.name, ReverseSingleRelatedObjectDescriptor(self, self.manager_class))
 
     def contribute_to_related_class(self, cls, related):
         # Internal FK's - i.e., those with a related name ending with '+' -
         # and swapped models don't get a related descriptor.
         if not self.rel.is_hidden() and not related.model._meta.swapped:
-            setattr(cls, related.get_accessor_name(), ForeignRelatedObjectsDescriptor(related))
+            setattr(cls, related.get_accessor_name(), ForeignRelatedObjectsDescriptor(related, self.reverse_manager_class))
             if self.rel.limit_choices_to:
                 cls._meta.related_fkey_lookups.append(self.rel.limit_choices_to)
 
@@ -1197,7 +1215,7 @@ class ForeignKey(ForeignObject):
             return
 
         using = router.db_for_read(model_instance.__class__, instance=model_instance)
-        qs = self.rel.to._default_manager.using(using).filter(
+        qs = self.manager.using(using).filter(
                 **{self.rel.field_name: value}
              )
         qs = qs.complex_filter(self.rel.limit_choices_to)
@@ -1258,7 +1276,7 @@ class ForeignKey(ForeignObject):
                              (self.name, self.rel.to))
         defaults = {
             'form_class': forms.ModelChoiceField,
-            'queryset': self.rel.to._default_manager.using(db).complex_filter(self.rel.limit_choices_to),
+            'queryset': self.manager.using(db).complex_filter(self.rel.limit_choices_to),
             'to_field_name': self.rel.field_name,
         }
         defaults.update(kwargs)
